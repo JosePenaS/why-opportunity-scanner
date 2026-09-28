@@ -4,6 +4,10 @@ run-name: WHY scan ${{ inputs.scan_id || github.run_id }}
 on:
   workflow_dispatch:
     inputs:
+      retry_run_id:
+        description: 'Optional: previous Actions run ID; retry unfinished research only'
+        required: false
+        type: string
       scan_id:
         description: 'Leave blank for a manual GitHub run'
         required: false
@@ -32,6 +36,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
+      WHY_RETRY: ${{ inputs.retry_run_id != '' }}
+      RETRY_RUN_ID: ${{ inputs.retry_run_id }}
       WHY_SCAN_ID: ${{ inputs.scan_id }}
       WHY_CONTEXT_JSON: ${{ inputs.context_json }}
       WHY_RESEARCH: ${{ inputs.research }}
@@ -55,6 +61,13 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            if (process.env.RETRY_RUN_ID) {
+              if (!/^\d+$/.test(process.env.RETRY_RUN_ID)) throw new Error('Invalid retry run ID');
+              const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id:process.env.RETRY_RUN_ID});
+              if (run.path!=='.github/workflows/why-opportunity-scan.yml' || run.head_branch!=='main') throw new Error('Retry must use this scanner workflow on main');
+              core.setOutput('run_id',run.id);
+              return;
+            }
             const {data} = await github.rest.actions.listArtifactsForRepo({
               ...context.repo, name:'why-opportunity-result', per_page:100
             });
@@ -69,7 +82,11 @@ jobs:
           path: why_scanner/previous
           run-id: ${{ steps.previous.outputs.run_id }}
           github-token: ${{ github.token }}
+      - name: Prepare saved scan for research retry
+        if: inputs.retry_run_id != ''
+        run: node why_scanner/prepare-retry.mjs
       - name: Collect four Google Trends windows
+        if: inputs.retry_run_id == ''
         shell: Rscript {0}
         run: source('why_scanner/collect.R', echo=FALSE)
       - name: Cluster and research stories
